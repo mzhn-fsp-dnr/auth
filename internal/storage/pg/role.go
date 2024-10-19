@@ -2,18 +2,16 @@ package pg
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
 
 	"mzhn/auth/internal/domain/dto"
-	"mzhn/auth/internal/domain/entity"
 	"mzhn/auth/internal/services/authservice"
-	"mzhn/auth/internal/storage"
 	"mzhn/auth/pkg/sl"
 
 	"github.com/Masterminds/squirrel"
+	"github.com/jackc/pgx"
 	"github.com/jmoiron/sqlx"
 )
 
@@ -62,14 +60,6 @@ func (r *RoleStorage) Add(ctx context.Context, dto *dto.AddRoles) (err error) {
 			continue
 		}
 
-		if err := r.check(ctx, dto.UserId, role); err != nil {
-			if errors.Is(err, storage.ErrRoleAlreadyAssigned) {
-				continue
-			}
-
-			return fmt.Errorf("%s: %w", fn, err)
-		}
-
 		query, args, err := squirrel.
 			Insert(roleTable).
 			Columns("uid", "role").
@@ -84,47 +74,53 @@ func (r *RoleStorage) Add(ctx context.Context, dto *dto.AddRoles) (err error) {
 		log = log.With(slog.String("query", query), slog.Any("args", args))
 
 		log.Debug("executing query")
-
 		if _, err := tx.Exec(query, args...); err != nil {
-			log.Error("cannot execute query", sl.Err(err))
-			return err
+			var e pgx.PgError
+			if errors.As(err, &e) {
+				if e.Code == "23505" {
+					continue
+				}
+
+				log.Error("cannot execute query", sl.PgError(e))
+				return err
+			}
 		}
 	}
 
 	return nil
 }
 
-func (r *RoleStorage) check(ctx context.Context, userId string, role entity.Role) error {
-	fn := "pg.RoleStorage.check"
-	log := r.logger.With(sl.Method(fn))
+// func (r *RoleStorage) check(ctx context.Context, userId string, role entity.Role) error {
+// 	fn := "pg.RoleStorage.check"
+// 	log := r.logger.With(sl.Method(fn))
 
-	query, args, err := squirrel.
-		Select("*").
-		From(roleTable).
-		Where(squirrel.Eq{"uid": userId, "role": role}).
-		PlaceholderFormat(squirrel.Dollar).
-		ToSql()
-	if err != nil {
-		log.Error("cannot build query", sl.Err(err))
-		return fmt.Errorf("%s: %w", fn, err)
-	}
+// 	query, args, err := squirrel.
+// 		Select("*").
+// 		From(roleTable).
+// 		Where(squirrel.Eq{"uid": userId, "role": role}).
+// 		PlaceholderFormat(squirrel.Dollar).
+// 		ToSql()
+// 	if err != nil {
+// 		log.Error("cannot build query", sl.Err(err))
+// 		return fmt.Errorf("%s: %w", fn, err)
+// 	}
 
-	qlog := log.With(slog.String("query", query), slog.Any("args", args))
-	qlog.Debug("executing query")
+// 	qlog := log.With(slog.String("query", query), slog.Any("args", args))
+// 	qlog.Debug("executing query")
 
-	_, err = r.db.QueryContext(ctx, query, args...)
-	if err == nil {
-		log.Debug("role already assigned")
-		return fmt.Errorf("%s: %w", fn, storage.ErrRoleAlreadyAssigned)
-	}
+// 	_, err = r.db.QueryContext(ctx, query, args...)
+// 	if err == nil {
+// 		log.Debug("role already assigned")
+// 		return fmt.Errorf("%s: %w", fn, storage.ErrRoleAlreadyAssigned)
+// 	}
 
-	if !errors.Is(err, sql.ErrNoRows) {
-		log.Error("cannot execute query", sl.Err(err))
-		return fmt.Errorf("%s: %w", fn, err)
-	}
+// 	if !errors.Is(err, sql.ErrNoRows) {
+// 		log.Error("cannot execute query", sl.Err(err))
+// 		return fmt.Errorf("%s: %w", fn, err)
+// 	}
 
-	return nil
-}
+// 	return nil
+// }
 
 func (r *RoleStorage) Remove(ctx context.Context, dto *dto.RemoveRoles) (err error) {
 	log := r.logger.With(slog.String("method", "Remove"))
